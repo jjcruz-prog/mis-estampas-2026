@@ -90,6 +90,93 @@ function StickerEditor({ userId }) {
 }
 
 // --- SUB-COMPONENTE: ENCONTRAR INTERCAMBIOS ---
-function MatchFinder({ userId }) {
-  return <div className="text-center p-10 text-gray-500 italic">Buscando personas con tus faltantes... (Se conecta vía SQL a Supabase)</div>;
+function EncontrarIntercambios({ userId }) {
+  const [matches, setMatches] = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  const buscarMatch = async () => {
+    setLoading(true);
+    
+    // 1. Traer mis datos
+    const { data: misDatos } = await supabase
+      .from('user_stickers')
+      .select('*')
+      .eq('user_id', userId);
+
+    const misFaltantes = misDatos.filter(s => s.is_missing).map(s => s.sticker_number);
+    const misRepetidas = misDatos.filter(s => s.repeated_count > 0).map(s => s.sticker_number);
+
+    // 2. Traer datos de los DEMÁS (que tengan lo que me falta o necesiten lo que tengo)
+    const { data: otrosDatos, error } = await supabase
+      .from('user_stickers')
+      .select('user_id, sticker_number, is_missing, repeated_count')
+      .neq('user_id', userId); // No compararme conmigo mismo
+
+    if (error) {
+      console.error(error);
+      setLoading(false);
+      return;
+    }
+
+    // 3. Lógica de cruce
+    // Agrupamos por usuario para ver quién es el mejor "match"
+    const sugerencias = {};
+
+    otrosDatos.forEach(registro => {
+      const otroId = registro.user_id;
+      if (!sugerencias[otroId]) sugerencias[otroId] = { tieneParaMi: [], yoTengoParaEl: [] };
+
+      // ¿Él tiene una que me falta? (Él la tiene repetida y a mí me falta)
+      if (registro.repeated_count > 0 && misFaltantes.includes(registro.sticker_number)) {
+        sugerencias[otroId].tieneParaMi.push(registro.sticker_number);
+      }
+
+      // ¿Yo tengo una que a él le falta? (Yo la tengo repetida y a él le falta)
+      if (registro.is_missing && misRepetidas.includes(registro.sticker_number)) {
+        sugerencias[otroId].yoTengoParaEl.push(registro.sticker_number);
+      }
+    });
+
+    // Convertir a lista y filtrar solo los que tienen al menos un intercambio posible
+    const listaMatches = Object.entries(sugerencias)
+      .map(([id, info]) => ({ id, ...info }))
+      .filter(m => m.tieneParaMi.length > 0 || m.yoTengoParaEl.length > 0);
+
+    setMatches(listaMatches);
+    setLoading(false);
+  };
+
+  return (
+    <div className="space-y-4">
+      <button 
+        onClick={buscarMatch}
+        disabled={loading}
+        className="w-full bg-indigo-600 text-white font-bold py-3 rounded-xl hover:bg-indigo-700 transition"
+      >
+        {loading ? "Buscando coincidencias..." : "🔎 ¡Encontrar Intercambios ahora!"}
+      </button>
+
+      <div className="space-y-3">
+        {matches.length === 0 && !loading && (
+          <p className="text-center text-gray-500 text-sm">No hay propuestas aún. ¡Dile a tus amigos que se registren!</p>
+        )}
+        
+        {matches.map(match => (
+          <div key={match.id} className="bg-white p-4 rounded-2xl border-2 border-indigo-100 shadow-sm">
+            <h3 className="font-bold text-indigo-900 mb-2">Usuario: {match.id.slice(0, 5)}...</h3>
+            <div className="grid grid-cols-2 gap-2 text-sm">
+              <div className="bg-green-50 p-2 rounded-lg">
+                <p className="text-green-700 font-bold">Te puede dar:</p>
+                <p className="text-green-600 font-mono">{match.tieneParaMi.join(', ') || 'Nada'}</p>
+              </div>
+              <div className="bg-blue-50 p-2 rounded-lg">
+                <p className="text-blue-700 font-bold">Le puedes dar:</p>
+                <p className="text-blue-600 font-mono">{match.yoTengoParaEl.join(', ') || 'Nada'}</p>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
