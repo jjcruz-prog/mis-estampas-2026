@@ -93,85 +93,100 @@ function StickerEditor({ userId }) {
 function EncontrarIntercambios({ userId }) {
   const [matches, setMatches] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null); // Nuevo: Para saber si algo truena
 
   const buscarMatch = async () => {
-    setLoading(true);
-    
-    // 1. Traer mis datos
-    const { data: misDatos } = await supabase
-      .from('user_stickers')
-      .select('*')
-      .eq('user_id', userId);
+    try {
+      setLoading(true);
+      setError(null);
+      
+      // 1. Mis datos
+      const { data: misDatos, error: err1 } = await supabase
+        .from('user_stickers')
+        .select('*')
+        .eq('user_id', userId);
 
-    const misFaltantes = misDatos.filter(s => s.is_missing).map(s => s.sticker_number);
-    const misRepetidas = misDatos.filter(s => s.repeated_count > 0).map(s => s.sticker_number);
+      if (err1) throw new Error("Error leyendo mis datos");
 
-    // 2. Traer datos de los DEMÁS (que tengan lo que me falta o necesiten lo que tengo)
-    const { data: otrosDatos, error } = await supabase
-      .from('user_stickers')
-      .select('user_id, sticker_number, is_missing, repeated_count')
-      .neq('user_id', userId); // No compararme conmigo mismo
+      const misFaltantes = misDatos.filter(s => s.is_missing).map(s => Number(s.sticker_number));
+      const misRepetidas = misDatos.filter(s => s.repeated_count > 0).map(s => Number(s.sticker_number));
 
-    if (error) {
-      console.error(error);
+      // 2. Datos de otros
+      const { data: otrosDatos, error: err2 } = await supabase
+        .from('user_stickers')
+        .select('*')
+        .neq('user_id', userId);
+
+      if (err2) throw new Error("Error leyendo otros datos");
+
+      // 3. Cruce
+      const sugerencias = {};
+      otrosDatos.forEach(reg => {
+        const otroId = reg.user_id;
+        const n = Number(reg.sticker_number);
+        if (!sugerencias[otroId]) sugerencias[otroId] = { tieneParaMi: [], yoTengoParaEl: [] };
+
+        if (reg.repeated_count > 0 && misFaltantes.includes(n)) {
+          sugerencias[otroId].tieneParaMi.push(n);
+        }
+        if (reg.is_missing && misRepetidas.includes(n)) {
+          sugerencias[otroId].yoTengoParaEl.push(n);
+        }
+      });
+
+      const listaFinal = Object.entries(sugerencias)
+        .map(([id, info]) => ({ id, ...info }))
+        .filter(m => m.tieneParaMi.length > 0 || m.yoTengoParaEl.length > 0);
+
+      setMatches(listaFinal);
+    } catch (e) {
+      setError(e.message);
+    } finally {
       setLoading(false);
-      return;
     }
-
-    // 3. Lógica de cruce
-    // Agrupamos por usuario para ver quién es el mejor "match"
-    const sugerencias = {};
-
-    otrosDatos.forEach(registro => {
-      const otroId = registro.user_id;
-      if (!sugerencias[otroId]) sugerencias[otroId] = { tieneParaMi: [], yoTengoParaEl: [] };
-
-      // ¿Él tiene una que me falta? (Él la tiene repetida y a mí me falta)
-      if (registro.repeated_count > 0 && misFaltantes.includes(registro.sticker_number)) {
-        sugerencias[otroId].tieneParaMi.push(registro.sticker_number);
-      }
-
-      // ¿Yo tengo una que a él le falta? (Yo la tengo repetida y a él le falta)
-      if (registro.is_missing && misRepetidas.includes(registro.sticker_number)) {
-        sugerencias[otroId].yoTengoParaEl.push(registro.sticker_number);
-      }
-    });
-
-    // Convertir a lista y filtrar solo los que tienen al menos un intercambio posible
-    const listaMatches = Object.entries(sugerencias)
-      .map(([id, info]) => ({ id, ...info }))
-      .filter(m => m.tieneParaMi.length > 0 || m.yoTengoParaEl.length > 0);
-
-    setMatches(listaMatches);
-    setLoading(false);
   };
 
   return (
-    <div className="space-y-4">
+    <div className="bg-gray-50 p-4 rounded-3xl min-h-[200px]">
       <button 
         onClick={buscarMatch}
-        disabled={loading}
-        className="w-full bg-indigo-600 text-white font-bold py-3 rounded-xl hover:bg-indigo-700 transition"
+        className="w-full bg-indigo-600 text-white font-bold py-4 rounded-2xl mb-4 shadow-lg active:scale-95 transition-all"
       >
-        {loading ? "Buscando coincidencias..." : "🔎 ¡Encontrar Intercambios ahora!"}
+        {loading ? "⌛ Buscando..." : "🔎 Buscar Intercambios"}
       </button>
 
-      <div className="space-y-3">
-        {matches.length === 0 && !loading && (
-          <p className="text-center text-gray-500 text-sm">No hay propuestas aún. ¡Dile a tus amigos que se registren!</p>
-        )}
-        
-        {matches.map(match => (
-          <div key={match.id} className="bg-white p-4 rounded-2xl border-2 border-indigo-100 shadow-sm">
-            <h3 className="font-bold text-indigo-900 mb-2">Usuario: {match.id.slice(0, 5)}...</h3>
-            <div className="grid grid-cols-2 gap-2 text-sm">
-              <div className="bg-green-50 p-2 rounded-lg">
-                <p className="text-green-700 font-bold">Te puede dar:</p>
-                <p className="text-green-600 font-mono">{match.tieneParaMi.join(', ') || 'Nada'}</p>
+      {/* ERROR VISIBLE */}
+      {error && (
+        <div className="p-4 bg-red-100 text-red-700 rounded-xl mb-4 text-sm font-bold">
+          ⚠️ Error técnico: {error}
+        </div>
+      )}
+
+      {/* LEYENDA SI NO HAY COINCIDENCIAS */}
+      {matches.length === 0 && !loading && !error && (
+        <div className="text-center p-10 border-2 border-dashed border-gray-200 rounded-3xl">
+          <p className="text-gray-400 font-medium">No se encontraron cambios.</p>
+          <p className="text-gray-300 text-xs mt-2">Prueba marcando más repetidas o dile a un amigo que se registre.</p>
+        </div>
+      )}
+
+      {/* LISTA DE RESULTADOS */}
+      <div className="space-y-4">
+        {matches.map(m => (
+          <div key={m.id} className="bg-white p-5 rounded-2xl shadow-sm border border-indigo-100">
+            <h4 className="text-xs font-black text-indigo-400 uppercase mb-3 tracking-widest">Candidato: {m.id.slice(0, 8)}</h4>
+            <div className="space-y-3">
+              <div className="bg-green-50 p-3 rounded-xl border border-green-100">
+                <p className="text-[10px] font-bold text-green-600 mb-1">🎁 TE DA:</p>
+                <div className="flex flex-wrap gap-1">
+                  {m.tieneParaMi.map(n => <span key={n} className="bg-green-500 text-white text-[10px] px-2 py-0.5 rounded font-bold">#{n}</span>)}
+                </div>
               </div>
-              <div className="bg-blue-50 p-2 rounded-lg">
-                <p className="text-blue-700 font-bold">Le puedes dar:</p>
-                <p className="text-blue-600 font-mono">{match.yoTengoParaEl.join(', ') || 'Nada'}</p>
+              <div className="bg-blue-50 p-3 rounded-xl border border-blue-100">
+                <p className="text-[10px] font-bold text-blue-600 mb-1">🤝 TÚ LE DAS:</p>
+                <div className="flex flex-wrap gap-1">
+                  {m.yoTengoParaEl.map(n => <span key={n} className="bg-blue-500 text-white text-[10px] px-2 py-0.5 rounded font-bold">#{n}</span>)}
+                </div>
               </div>
             </div>
           </div>
